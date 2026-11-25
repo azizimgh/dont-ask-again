@@ -23,6 +23,35 @@ def run(repo: Path, *args: str, timeout: int = 120) -> subprocess.CompletedProce
     )
 
 
+def read_blobs(repo: Path, specs: list[str], timeout: int = 600) -> dict[str, str]:
+    """Read many `<rev>:<path>` objects with a single `git cat-file --batch` process.
+
+    Missing objects are left out of the result.
+    """
+    if not specs:
+        return {}
+    p = subprocess.run(
+        ["git", "-C", str(repo), "cat-file", "--batch"],
+        input=("\n".join(specs) + "\n").encode(),
+        capture_output=True,
+        timeout=timeout,
+    )
+    out: dict[str, str] = {}
+    data, pos = p.stdout, 0
+    for spec in specs:
+        nl = data.find(b"\n", pos)
+        if nl < 0:
+            break
+        header = data[pos:nl].decode("utf-8", "replace")
+        pos = nl + 1
+        if header.endswith((" missing", " ambiguous")):
+            continue
+        size = int(header.rsplit(" ", 1)[1])  # "<oid> <type> <size>"
+        out[spec] = data[pos : pos + size].decode("utf-8", "replace")
+        pos += size + 1  # content is followed by a newline
+    return out
+
+
 def repo_root(path: Path) -> Path | None:
     if not available():
         return None

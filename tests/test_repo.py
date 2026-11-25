@@ -102,6 +102,35 @@ class RepoTest(unittest.TestCase):
         self.assertIn(("DAA001", "local-settings-in-history", "warn"), self.checks(r))
         self.assertFalse(any(f.commit for f in scan(self.repo).findings))
 
+    def test_history_reports_each_rotated_password(self):
+        # Same rule text, different password in each commit: every one needs rotating.
+        for pw in ("Rot-Pass-1", "Rot-Pass-2", "Rot-Pass-3"):
+            self.write_local(f"Bash(PGPASSWORD={pw} psql -h db)")
+            git(self.repo, "add", "-f", ".claude/settings.local.json")
+            git(self.repo, "commit", "-qm", pw)
+        r = scan(self.repo, history=True)
+        secrets = sorted(f.secret for f in r.findings if f.check == "DAA002")
+        self.assertEqual(secrets, ["Rot-Pass-1", "Rot-Pass-2", "Rot-Pass-3"])
+        self.assertEqual(sum(1 for f in r.findings if f.check == "DAA002" and f.commit is None), 1)
+
+    def test_history_counts_commits_per_secret(self):
+        for i in range(3):  # same secret, unrelated rule changes around it
+            self.write_local(f"Bash(ls {i})", SECRET_RULE)
+            git(self.repo, "add", "-f", ".claude/settings.local.json")
+            git(self.repo, "commit", "-qm", f"c{i}")
+        git(self.repo, "rm", "-q", "--cached", ".claude/settings.local.json")
+        git(self.repo, "commit", "-qm", "remove")
+        self.local.unlink()
+        [f] = [f for f in scan(self.repo, history=True).findings if f.check == "DAA002"]
+        self.assertIn("present in 3 commits", f.message)
+
+    def test_read_blobs_skips_missing(self):
+        from dont_ask_again.git import read_blobs
+
+        head = git(self.repo, "rev-parse", "HEAD").strip()
+        blobs = read_blobs(self.repo, [f"{head}:README.md", f"{head}:no such file", f"{head}:README.md"])
+        self.assertEqual(blobs, {f"{head}:README.md": "hi\n"})
+
     def test_dockerignore(self):
         self.write_local("Bash(ls)")
         (self.repo / "Dockerfile").write_text("FROM scratch\nCOPY . .\n")

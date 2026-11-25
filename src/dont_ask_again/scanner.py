@@ -55,11 +55,19 @@ class Finding:
     commit: str | None = None
     fingerprint: str = ""
     raw: str = field(default="", repr=False)  # original value, never printed
+    secret: str = field(default="", repr=False)  # the secret itself, only for de-duplication, never printed
 
     def to_dict(self) -> dict:
         d = asdict(self)
         d.pop("raw")
+        d.pop("secret")
         return d
+
+    @property
+    def dedupe_key(self) -> tuple[str, str, str]:
+        # Uses the real secret: two different passwords are two findings, even if the
+        # rule text around them is identical (e.g. a password rotated across commits).
+        return (self.file, self.rule, self.secret or self.fingerprint)
 
 
 @dataclass
@@ -173,6 +181,7 @@ def scan_json_text(text: str, relpath: str, det: Detector) -> list[Finding]:
                     message=h.message,
                     fingerprint=_fingerprint(relpath, h.rule_id, value, h.secret),
                     raw=value,
+                    secret=h.secret,
                 )
             )
 
@@ -227,25 +236,42 @@ def scan_history(repo: Path, det: Detector) -> tuple[list[Finding], dict[str, st
     p = git.run(repo, "log", "--all", "--format=%x00%H", "--name-only", "--diff-filter=AMR", "--", *HISTORY_PATHSPECS, timeout=600)
     if p.returncode != 0:
         return [], {}
-    by_fp: dict[str, Finding] = {}
-    past_local: dict[str, str] = {}
+
+    versions: list[tuple[str, str]] = []  # (commit, path), newest first
     for chunk in p.stdout.split("\0"):
         lines = [ln for ln in chunk.splitlines() if ln.strip()]
-        if not lines:
+        if lines:
+            versions += [(lines[0].strip(), path) for path in lines[1:] if is_agent_file(path)]
+
+    # One `git cat-file --batch` process for every version, instead of one `git show` each.
+    blobs = git.read_blobs(repo, [f"{c}:{path}" for c, path in versions])
+
+    by_key: dict[tuple[str, str, str], Finding] = {}
+    seen_in: dict[tuple[str, str, str], int] = {}
+    past_local: dict[str, str] = {}
+    for commit, path in versions:
+        text = blobs.get(f"{commit}:{path}")
+        if text is None:
             continue
-        commit, paths = lines[0].strip(), lines[1:]
-        for path in paths:
-            if not is_agent_file(path):
-                continue
-            blob = git.run(repo, "show", f"{commit}:{path}")
-            if blob.returncode != 0:
-                continue
-            for f in scan_json_text(blob.stdout, path, det):
-                f.commit = commit[:12]
-                by_fp[f.fingerprint] = f  # log is newest-first: the last write is the oldest commit
-            if PurePosixPath(path).name == "settings.local.json":
-                past_local[path] = commit[:12]
-    return list(by_fp.values()), past_local
+        for f in scan_json_text(text, path, det):
+            f.commit = commit[:12]
+            key = f.dedupe_key
+            by_key[key] = f  # newest-first, so the last write is the oldest commit
+            seen_in[key] = seen_in.get(key, 0) + 1
+        if PurePosixPath(path).name == "settings.local.json":
+            past_local[path] = commit[:12]
+
+    findings = []
+    for key, f in by_key.items():
+        n = seen_in[key]
+        f.message = (
+            f"In git history (first in commit {f.commit}"
+            + (f", present in {n} commits" if n > 1 else "")
+            + "), still readable by anyone with a clone or fork. "
+            + f.message
+        )
+        findings.append(f)
+    return findings, past_local
 
 
 # -- orchestration --------------------------------------------------------------
@@ -312,13 +338,9 @@ def scan(
 
     if history:
         if repo:
-            current = {f.fingerprint for f in findings}
+            current = {f.dedupe_key for f in findings}
             hist, past_local = scan_history(repo, det)
-            for f in hist:
-                if f.fingerprint in current:
-                    continue
-                f.message = f"In git history (commit {f.commit}), still readable by anyone with a clone or fork. {f.message}"
-                findings.append(f)
+            findings += [f for f in hist if f.dedupe_key not in current]
             tracked_now = {f.file for f in findings if f.check == "DAA001"}
             for p, commit in sorted(past_local.items()):
                 if p not in tracked_now:
