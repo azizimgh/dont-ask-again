@@ -79,8 +79,10 @@ It skips references, which are the safe way to write these commands:
 ```bash
 dont-ask-again scan --history           # every version ever committed, not just the current files
 dont-ask-again scan --format sarif -o daa.sarif
+dont-ask-again scan --sarif daa.sarif     # text on screen and SARIF to a file, in one run
 dont-ask-again scan --fail-on warn      # exit 1 on warnings too (default: errors only)
 dont-ask-again scan --skip DAA004       # skip checks
+dont-ask-again scan --skip DAA001,DAA003,DAA004   # file contents only, no git checks
 ```
 
 Exit codes: `0` clean, `1` findings, `2` usage error.

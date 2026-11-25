@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 
 from . import __version__
-from .scanner import CHECKS, ScanResult
+from .models import CHECKS, ScanResult
 
 INFO_URI = "https://github.com/azizimgh/dont-ask-again"
 

@@ -12,7 +12,7 @@ import re
 import shlex
 from dataclasses import dataclass
 
-from .rules import FlagRule, RulePack
+from .rules import ATTACHED, EQ, NEXT_OR_ATTACHED, NEXT_OR_EQ, FlagRule, RulePack
 
 ASSIGN_RE = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)=(.*)$", re.S)
 OPTION_PREFIX_RE = re.compile(r"^--?[A-Za-z][\w-]*=")  # --env=NAME=VALUE, --from-literal=k=v
@@ -81,12 +81,11 @@ class Detector:
     def scan_text(self, s: str) -> list[Hit]:
         """Known token formats, auth headers and URL credentials anywhere in a string."""
         hits = []
-        for group in (self.rules.patterns, self.rules.headers, self.rules.urls):
-            for r in group:
-                for m in r.regex.finditer(s):
-                    secret = m.groupdict().get("secret") or m.group(0)
-                    if not self.is_placeholder(secret):
-                        hits.append(Hit(r.id, secret, r.description))
+        for r in self.rules.regexes:
+            for m in r.regex.finditer(s):
+                secret = m.groupdict().get("secret") or m.group(0)
+                if not self.is_placeholder(secret):
+                    hits.append(Hit(r.id, secret, r.description))
         return dedupe(hits)
 
     def env_value(self, name: str, value: str, in_command: bool = True) -> Hit | None:
@@ -171,23 +170,13 @@ def _flag_values(r: FlagRule, rest: list[str]) -> list[str]:
     out = []
     for k, t in enumerate(rest):
         nxt = rest[k + 1] if k + 1 < len(rest) else None
-        single_dash = t.startswith("-") and not t.startswith("--")
-        for f in r.short:
-            if t == f and nxt is not None:
+        for flag, how in r.flags:
+            if how in (NEXT_OR_ATTACHED, NEXT_OR_EQ) and t == flag and nxt is not None:
                 out.append(nxt)
-            elif single_dash and t.startswith(f) and len(t) > len(f):
-                out.append(t[len(f) :])
-        for f in r.attached:
-            if single_dash and t.startswith(f) and len(t) > len(f):
-                out.append(t[len(f) :])
-        for f in r.long:
-            if t == f and nxt is not None:
-                out.append(nxt)
-            elif t.startswith(f + "="):
-                out.append(t[len(f) + 1 :])
-        for f in r.long_eq:
-            if t.startswith(f + "="):
-                out.append(t[len(f) + 1 :])
+            elif how in (NEXT_OR_ATTACHED, ATTACHED) and not t.startswith("--") and t.startswith(flag) and len(t) > len(flag):
+                out.append(t[len(flag) :])
+            elif how in (NEXT_OR_EQ, EQ) and t.startswith(flag + "="):
+                out.append(t[len(flag) + 1 :])
     return out
 
 

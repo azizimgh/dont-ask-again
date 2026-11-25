@@ -47,14 +47,10 @@ runs:
       run: |
         args=(scan "$INPUT_PATH" --fail-on "$INPUT_FAIL_ON")
         if [ "$INPUT_HISTORY" = "true" ]; then args+=(--history); fi
+        if [ "$INPUT_SARIF" = "true" ]; then args+=(--sarif dont-ask-again.sarif); fi
         set +e
         dont-ask-again "${args[@]}"
-        code=$?
-        if [ "$INPUT_SARIF" = "true" ]; then
-          dont-ask-again "${args[@]}" --format sarif --output dont-ask-again.sarif --fail-on never
-        fi
-        set -e
-        echo "exit-code=$code" >> "$GITHUB_OUTPUT"
+        echo "exit-code=$?" >> "$GITHUB_OUTPUT"
 
     - name: Upload SARIF
       if: inputs.sarif == 'true'

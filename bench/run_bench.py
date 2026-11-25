@@ -21,6 +21,7 @@ sys.path[:0] = [str(ROOT / "src"), str(ROOT / "tests")]
 
 from cases import NEGATIVE, POSITIVE  # noqa: E402
 
+from dont_ask_again.models import GIT_CHECKS  # noqa: E402
 from dont_ask_again.scanner import scan  # noqa: E402
 
 
@@ -34,7 +35,7 @@ def write_case(base: Path, i: int, rule: str) -> Path:
 
 
 def ours(d: Path) -> bool:
-    return any(f.check == "DAA002" for f in scan(d, git_checks=False).findings)
+    return any(f.check == "DAA002" for f in scan(d, skip=GIT_CHECKS).findings)
 
 
 def gitleaks(d: Path) -> bool | None:
