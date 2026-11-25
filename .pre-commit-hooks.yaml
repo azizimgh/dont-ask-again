@@ -1,0 +1,7 @@
+- id: dont-ask-again
+  name: dont-ask-again (secrets in AI agent config)
+  description: Blocks commits of Claude Code / MCP config that hold secrets.
+  entry: dont-ask-again scan --skip DAA004
+  language: python
+  pass_filenames: false
+  always_run: true

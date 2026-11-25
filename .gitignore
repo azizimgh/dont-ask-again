@@ -1,0 +1,12 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+*.sarif
+r.json
+
+# AI agent local settings: may hold approved commands with secrets
+**/.claude/settings.local.json
