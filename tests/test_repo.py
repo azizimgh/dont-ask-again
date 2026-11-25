@@ -1,5 +1,7 @@
 """End-to-end tests against throwaway git repos."""
 
+import contextlib
+import io
 import json
 import os
 import shutil
@@ -178,6 +180,33 @@ class RepoTest(unittest.TestCase):
         self.assertEqual(doc["version"], "2.1.0")
         self.assertTrue(doc["runs"][0]["results"])
         self.assertNotIn("Tr0ub4dor-77", out.read_text())
+
+    def test_sarif_flag_writes_alongside_text_in_one_run(self):
+        self.write_local(SECRET_RULE)
+        out = self.repo / "side.sarif"
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            code = cli.main(["scan", str(self.repo), "--sarif", str(out), "--fail-on", "warn"])
+        self.assertEqual(code, 1)
+        self.assertIn("DAA002", buf.getvalue())
+        self.assertEqual(json.loads(out.read_text())["version"], "2.1.0")
+
+    def test_ignore_sources_batch(self):
+        from dont_ask_again.git import ignore_sources, source_travels
+
+        (self.repo / ".gitignore").write_text("*.log\n")
+        got = ignore_sources(self.repo, ["a.log", ".claude/settings.local.json", "keep.txt"])
+        self.assertTrue(source_travels(got["a.log"]))
+        self.assertFalse(source_travels(got[".claude/settings.local.json"]))  # global excludes only
+        self.assertIsNotNone(got[".claude/settings.local.json"])
+        self.assertIsNone(got["keep.txt"])
+
+    def test_skip_all_git_checks(self):
+        self.write_local(SECRET_RULE)
+        git(self.repo, "add", "-f", ".claude/settings.local.json")
+        git(self.repo, "commit", "-qm", "oops")
+        r = scan(self.repo, skip={"daa001", "DAA003", "DAA004"})
+        self.assertEqual({f.check for f in r.findings}, {"DAA002"})
 
 
 class NonGitTest(unittest.TestCase):

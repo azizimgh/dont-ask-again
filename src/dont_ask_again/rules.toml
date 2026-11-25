@@ -2,14 +2,24 @@
 #
 # One rule = one table below + one test case in tests/cases.py.
 # Regexes use Python `re` syntax. Use TOML literal strings ('...') so backslashes stay as typed.
-# A named group `secret` marks the part to report; without it the whole match is the secret.
 #
-# Rule kinds:
-#   [[env]]      NAME=value assignments (in commands and in JSON "env" blocks)
-#   [[flag]]     command-line flags that carry a secret (sshpass -p, mysql -pX, ...)
-#   [[header]]   HTTP auth headers (curl -H, MCP "headers" blocks)
-#   [[url]]      credentials inside URLs
-#   [[pattern]]  known token formats, matched anywhere
+# Three kinds of rule:
+#
+#   [[env]]    NAME=value, in commands and in JSON "env" blocks. `name` matches the variable name.
+#
+#   [[flag]]   a command-line flag that carries a secret. `flags` uses this notation:
+#                "-p"           -p VALUE  or  -pVALUE
+#                "-p..."        only -pVALUE           (mysql: `-p` alone prompts)
+#                "--password"   --password VALUE  or  --password=VALUE
+#                "--password="  only --password=VALUE
+#              Optional: `requires` (a word that must follow the program, e.g. "login"),
+#              `positional = true` (take the first plain argument after `requires`),
+#              `value` (regex the value must match; a named group `secret` marks the secret),
+#              `programs = ["*"]` with `exclude_programs` for flags that apply to any program.
+#
+#   [[regex]]  matched anywhere in any string: headers, URLs, known token formats.
+#              A named group `secret` marks the secret; without it the whole match is reported.
+#              Rules are tried in file order, so put specific formats before generic ones.
 
 # Values that are references or placeholders, not secrets. Searched case-insensitively.
 [placeholders]
@@ -29,45 +39,45 @@ regex = [
   '^my[_-]?(password|pass|token|secret|key)$',
 ]
 
+# -- env ---------------------------------------------------------------------------
+
 [[env]]
 id = "env-secret-literal"
 description = "Literal secret assigned to an environment variable"
 name = '''(?i)^(PGPASSWORD|MYSQL_PWD|REDISCLI_AUTH|PASSWORD|PASSWD|PASS|PWD|TOKEN|SECRET|API_?KEY|[A-Z0-9_]*_(PASSWORD|PASSWD|PASS|PWD|TOKEN|SECRET|API_?KEY|ACCESS_KEY|SECRET_KEY|PRIVATE_KEY|AUTH|CREDENTIALS?))$'''
 
+# -- flags -------------------------------------------------------------------------
+
 [[flag]]
 id = "sshpass-password"
 description = "Password passed to sshpass -p"
 programs = ["sshpass"]
-short = ["-p"]
+flags = ["-p"]
 
 [[flag]]
 id = "mysql-password"
 description = "Password passed to a MySQL client (-pSECRET or --password=SECRET)"
 programs = ["mysql", "mariadb", "mysqldump", "mysqladmin", "mysqlimport", "mysqlsh", "mariadb-dump"]
-attached = ["-p"]        # `-p` alone prompts, so only the attached form is a secret
-long_eq = ["--password"]
+flags = ["-p...", "--password="]
 
 [[flag]]
 id = "redis-cli-password"
 description = "Password passed to redis-cli -a / --pass"
 programs = ["redis-cli", "valkey-cli"]
-short = ["-a"]
-long = ["--pass"]
+flags = ["-a", "--pass"]
 
 [[flag]]
 id = "registry-login-password"
 description = "Password passed to a container registry login"
 programs = ["docker", "podman", "nerdctl", "helm", "skopeo", "buildah", "oras", "crane"]
 requires = ["login"]     # avoids `docker run -p 8080:80`
-short = ["-p"]
-long = ["--password"]
+flags = ["-p", "--password"]
 
 [[flag]]
 id = "curl-user-password"
 description = "user:password passed to curl -u"
 programs = ["curl"]
-short = ["-u", "-U"]
-long = ["--user", "--proxy-user"]
+flags = ["-u", "-U", "--user", "--proxy-user"]
 value = '^[^:\s]+:(?P<secret>.+)$'
 
 [[flag]]
@@ -83,79 +93,83 @@ id = "generic-secret-flag"
 description = "Secret passed in a --password / --token style flag"
 programs = ["*"]
 exclude_programs = ["mysql", "mariadb", "mysqldump", "mysqladmin", "mysqlimport", "mysqlsh", "mariadb-dump"]
-long = ["--password", "--passwd", "--token", "--api-key", "--apikey", "--auth-token", "--access-token", "--client-secret", "--bearer-token"]
+flags = ["--password", "--passwd", "--token", "--api-key", "--apikey", "--auth-token", "--access-token", "--client-secret", "--bearer-token"]
 
-[[header]]
-id = "header-authorization"
-description = "Credential in an HTTP Authorization header"
-regex = '''(?i)\b(?:proxy-)?authorization\s*:\s*(?:bearer|basic|token|apikey|digest)\s+(?P<secret>[^\s"',;]+)'''
+# -- regex: known token formats (specific first) -----------------------------------
 
-[[header]]
-id = "header-api-key"
-description = "Credential in an API key header"
-regex = '''(?i)\b(?:x-api-key|api-key|x-auth-token|x-access-token|private-token|x-goog-api-key)\s*:\s*(?P<secret>[^\s"',;]+)'''
-
-[[url]]
-id = "url-credentials"
-description = "Password inside a URL (scheme://user:password@host)"
-regex = '''(?i)\b[a-z][a-z0-9+.\-]*://[^\s:/@?#'"]+:(?P<secret>[^\s@/?#'"]+)@'''
-
-[[url]]
-id = "url-query-secret"
-description = "Secret in a URL query parameter"
-regex = '''(?i)[?&](?:api[_-]?key|access[_-]?token|auth[_-]?token|token|secret|password|passwd)=(?P<secret>[^&\s"'#]+)'''
-
-[[pattern]]
+[[regex]]
 id = "private-key"
 description = "Private key block"
 regex = '-----BEGIN [A-Z ]*PRIVATE KEY-----'
 
-[[pattern]]
+[[regex]]
 id = "anthropic-api-key"
 description = "Anthropic API key"
 regex = '\bsk-ant-[A-Za-z0-9_\-]{20,}'
 
-[[pattern]]
+[[regex]]
 id = "openai-api-key"
 description = "OpenAI API key"
 regex = '\bsk-(?:proj-|svcacct-|admin-)?[A-Za-z0-9_\-]{20,}'
 
-[[pattern]]
+[[regex]]
 id = "github-token"
 description = "GitHub token"
 regex = '\b(?:(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{36}|github_pat_[A-Za-z0-9_]{50,})\b'
 
-[[pattern]]
+[[regex]]
 id = "gitlab-token"
 description = "GitLab personal access token"
 regex = '\bglpat-[A-Za-z0-9_\-]{20,}'
 
-[[pattern]]
+[[regex]]
 id = "npm-token"
 description = "npm access token"
 regex = '\bnpm_[A-Za-z0-9]{36}\b'
 
-[[pattern]]
+[[regex]]
 id = "aws-access-key-id"
 description = "AWS access key ID"
 regex = '\b(?:AKIA|ASIA)[A-Z0-9]{16}\b'
 
-[[pattern]]
+[[regex]]
 id = "slack-token"
 description = "Slack token"
 regex = '\bxox[abposr]-[A-Za-z0-9\-]{10,}'
 
-[[pattern]]
+[[regex]]
 id = "stripe-live-key"
 description = "Stripe live secret key"
 regex = '\b(?:sk|rk)_live_[A-Za-z0-9]{20,}'
 
-[[pattern]]
+[[regex]]
 id = "google-api-key"
 description = "Google API key"
 regex = '\bAIza[0-9A-Za-z_\-]{35}\b'
 
-[[pattern]]
+[[regex]]
 id = "vault-token"
 description = "HashiCorp Vault token"
 regex = '\bhv[sb]\.[A-Za-z0-9_\-]{20,}'
+
+# -- regex: headers and URLs -------------------------------------------------------
+
+[[regex]]
+id = "header-authorization"
+description = "Credential in an HTTP Authorization header"
+regex = '''(?i)\b(?:proxy-)?authorization\s*:\s*(?:bearer|basic|token|apikey|digest)\s+(?P<secret>[^\s"',;]+)'''
+
+[[regex]]
+id = "header-api-key"
+description = "Credential in an API key header"
+regex = '''(?i)\b(?:x-api-key|api-key|x-auth-token|x-access-token|private-token|x-goog-api-key)\s*:\s*(?P<secret>[^\s"',;]+)'''
+
+[[regex]]
+id = "url-credentials"
+description = "Password inside a URL (scheme://user:password@host)"
+regex = '''(?i)\b[a-z][a-z0-9+.\-]*://[^\s:/@?#'"]+:(?P<secret>[^\s@/?#'"]+)@'''
+
+[[regex]]
+id = "url-query-secret"
+description = "Secret in a URL query parameter"
+regex = '''(?i)[?&](?:api[_-]?key|access[_-]?token|auth[_-]?token|token|secret|password|passwd)=(?P<secret>[^&\s"'#]+)'''

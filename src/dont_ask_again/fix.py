@@ -11,14 +11,12 @@ from pathlib import Path
 from typing import Callable
 
 from . import git
-from .scanner import ScanResult
+from .checks import IGNORE_LINE
+from .models import ScanResult
 
-GITIGNORE_BLOCK = (
-    "\n# AI agent local settings: may hold approved commands with secrets (added by dont-ask-again)\n"
-    "**/.claude/settings.local.json\n"
-)
-DOCKERIGNORE_BLOCK = "\n# AI agent config (added by dont-ask-again)\n**/.claude\n"
-NPMIGNORE_BLOCK = "\n# AI agent config (added by dont-ask-again)\n.claude/\n"
+GITIGNORE_BLOCK = f"# AI agent local settings: may hold approved commands with secrets (added by dont-ask-again)\n{IGNORE_LINE}\n"
+DOCKERIGNORE_BLOCK = "# AI agent config (added by dont-ask-again)\n**/.claude\n"
+NPMIGNORE_BLOCK = "# AI agent config (added by dont-ask-again)\n.claude/\n"
 PERMISSION_LOCATION_RE = re.compile(r"(^|\.)(allow|deny|ask)\[\d+\]$")
 BACKUP_DIR = Path.home() / ".dont-ask-again" / "backups"
 
@@ -26,7 +24,7 @@ BACKUP_DIR = Path.home() / ".dont-ask-again" / "backups"
 @dataclass
 class Action:
     summary: str
-    apply: Callable[[], None]
+    apply: Callable[[], str | None]  # returns an optional message for the user
 
 
 def _append(path: Path, block: str) -> Callable[[], None]:
@@ -34,11 +32,8 @@ def _append(path: Path, block: str) -> Callable[[], None]:
         existing = path.read_text(encoding="utf-8") if path.exists() else ""
         if block.strip() in existing:
             return
-        if not existing:
-            path.write_text(block.lstrip("\n"), encoding="utf-8")
-            return
-        sep = "" if existing.endswith("\n") else "\n"
-        path.write_text(existing + sep + block, encoding="utf-8")
+        sep = "\n" if existing and not existing.endswith("\n") else ""
+        path.write_text(existing + sep + ("\n" if existing else "") + block, encoding="utf-8")
 
     return run
 
@@ -55,78 +50,74 @@ def _untrack(repo: Path, rel: str) -> Callable[[], None]:
 def _backup(path: Path) -> Path:
     # Outside the repo on purpose: a backup next to the original could get committed.
     BACKUP_DIR.mkdir(parents=True, exist_ok=True)
-    os.chmod(BACKUP_DIR.parent, 0o700)
-    os.chmod(BACKUP_DIR, 0o700)
-    name = time.strftime("%Y%m%d-%H%M%S-") + re.sub(r"[^A-Za-z0-9._-]", "_", str(path.resolve()).lstrip("/"))
-    dest = BACKUP_DIR / name
+    for d in (BACKUP_DIR.parent, BACKUP_DIR):
+        os.chmod(d, 0o700)
+    dest = BACKUP_DIR / (time.strftime("%Y%m%d-%H%M%S-") + re.sub(r"[^A-Za-z0-9._-]", "_", str(path.resolve()).lstrip("/")))
     dest.write_bytes(path.read_bytes())
     os.chmod(dest, 0o600)
     return dest
 
 
-def _remove_rules(path: Path, raws: set[str], log: list[str]) -> Callable[[], None]:
-    def run() -> None:
+def _remove_rules(path: Path, raws: set[str]) -> Callable[[], str | None]:
+    def run() -> str | None:
         data = json.loads(path.read_text(encoding="utf-8"))
         removed = 0
 
-        def walk(node):
+        def walk(node) -> None:
             nonlocal removed
-            if isinstance(node, dict):
-                for k, v in node.items():
-                    if k in ("allow", "deny", "ask") and isinstance(v, list):
-                        keep = [x for x in v if not (isinstance(x, str) and x in raws)]
-                        removed += len(v) - len(keep)
-                        node[k] = keep
-                    else:
-                        walk(v)
-            elif isinstance(node, list):
+            if isinstance(node, list):
                 for x in node:
                     walk(x)
+            elif isinstance(node, dict):
+                for k, v in node.items():
+                    if k in ("allow", "deny", "ask") and isinstance(v, list):
+                        node[k] = [x for x in v if not (isinstance(x, str) and x in raws)]
+                        removed += len(v) - len(node[k])
+                    else:
+                        walk(v)
 
         walk(data)
-        if removed:
-            dest = _backup(path)
-            path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
-            log.append(f"backup of {path.name} saved to {dest} (mode 600). It still holds the secret: delete it once you're happy.")
+        if not removed:
+            return None
+        dest = _backup(path)
+        path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+        return f"backup of {path.name} saved to {dest} (mode 600). It still holds the secret: delete it once you're happy."
 
     return run
 
 
-def plan(result: ScanResult, redact_local: bool) -> tuple[list[Action], list[str], list[str]]:
-    """Return (actions, manual steps, log list that actions append to)."""
+def plan(result: ScanResult, redact_local: bool) -> tuple[list[Action], list[str]]:
+    """Return (actions to apply, steps the user must do by hand)."""
     actions: list[Action] = []
     manual: list[str] = []
-    log: list[str] = []
     repo = result.repo
     current = [f for f in result.findings if f.commit is None]
+    rules = {(f.check, f.rule) for f in current}
 
     if repo:
         for f in current:
-            if f.check == "DAA001" and f.rule == "local-settings-tracked":
+            if f.rule == "local-settings-tracked":
                 actions.append(Action(f"git rm --cached {f.file}  (keeps your local copy)", _untrack(repo, f.file)))
 
-        if any(f.check == "DAA003" and f.rule.startswith("gitignore") for f in current) or any(
-            f.check == "DAA001" and f.rule == "local-settings-tracked" for f in current
-        ):
-            gi = repo / ".gitignore"
-            if "**/.claude/settings.local.json" not in (gi.read_text(encoding="utf-8") if gi.exists() else ""):
-                actions.append(Action("add `**/.claude/settings.local.json` to .gitignore", _append(gi, GITIGNORE_BLOCK)))
+        gi = repo / ".gitignore"
+        needs_gitignore = any(c == "DAA003" and r.startswith("gitignore") or r == "local-settings-tracked" for c, r in rules)
+        if needs_gitignore and IGNORE_LINE not in (gi.read_text(encoding="utf-8") if gi.exists() else ""):
+            actions.append(Action(f"add `{IGNORE_LINE}` to .gitignore", _append(gi, GITIGNORE_BLOCK)))
 
-        if any(f.rule == "dockerignore-missing" for f in current):
+        if ("DAA003", "dockerignore-missing") in rules:
             actions.append(Action("add `**/.claude` to .dockerignore", _append(repo / ".dockerignore", DOCKERIGNORE_BLOCK)))
 
-        if any(f.check == "DAA004" for f in current):
-            npmignore = repo / ".npmignore"
-            if npmignore.exists():
-                actions.append(Action("add `.claude/` to .npmignore", _append(npmignore, NPMIGNORE_BLOCK)))
+        if any(c == "DAA004" for c, _ in rules):
+            if (repo / ".npmignore").exists():
+                actions.append(Action("add `.claude/` to .npmignore", _append(repo / ".npmignore", NPMIGNORE_BLOCK)))
             else:
                 manual.append(
                     "npm would publish .claude/. Add a `files` allow-list to package.json, or create .npmignore "
                     "with `.claude/` (note: once .npmignore exists, npm stops reading .gitignore, so copy its rules over)."
                 )
 
-    secret_rules: dict[str, set[str]] = {}
     base = repo or (result.root if result.root.is_dir() else result.root.parent)
+    secret_rules: dict[str, set[str]] = {}
     for f in current:
         if f.check != "DAA002":
             continue
@@ -137,24 +128,17 @@ def plan(result: ScanResult, redact_local: bool) -> tuple[list[Action], list[str
 
     for rel, raws in sorted(secret_rules.items()):
         if redact_local:
-            actions.append(
-                Action(
-                    f"remove {len(raws)} secret-bearing permission rule(s) from {rel} "
-                    "(Claude Code will ask again next time)",
-                    _remove_rules(base / rel, raws, log),
-                )
-            )
+            summary = f"remove {len(raws)} secret-bearing permission rule(s) from {rel} (Claude Code will ask again next time)"
+            actions.append(Action(summary, _remove_rules(base / rel, raws)))
         else:
             manual.append(f"{rel}: {len(raws)} permission rule(s) hold a secret. Re-run with --redact-local to remove them.")
 
-    if any(f.commit for f in result.findings) or any(f.rule == "local-settings-in-history" for f in result.findings):
+    if any(f.commit for f in result.findings):
         manual.append(
             "Secrets are in git history. Rotate them; that is the real fix. Rewriting history "
             "(e.g. `git filter-repo --invert-paths --path .claude/settings.local.json`) does not reach "
             "existing clones or forks, and it needs a force-push your team must agree to."
         )
-
     if any(f.check == "DAA002" for f in result.findings):
         manual.insert(0, "Rotate every credential listed by `dont-ask-again scan` before anything else.")
-
-    return actions, manual, log
+    return actions, manual

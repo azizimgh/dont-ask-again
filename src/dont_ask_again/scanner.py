@@ -2,17 +2,18 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 import re
 import shlex
-from dataclasses import asdict, dataclass, field
 from pathlib import Path, PurePosixPath
 
 from . import checks, git
 from .detect import Detector, Hit, mask
+from .models import CHECKS, GIT_CHECKS, SEVERITY_ORDER, Finding, ScanResult, fingerprint
 from .rules import RulePack, load_rules
+
+__all__ = ["CHECKS", "Finding", "ScanResult", "scan", "scan_json_text", "unwrap_rule"]
 
 # (parent dir, file name) pairs that are agent config files
 AGENT_FILES = {
@@ -32,88 +33,31 @@ HISTORY_PATHSPECS = [f":(glob)**/{d}/{n}" for d, n in sorted(AGENT_FILES)] + [
 
 RULE_WRAPPER_RE = re.compile(r"^\s*[A-Za-z][\w.-]*\((.*)\)\s*$", re.S)  # Bash(...), WebFetch(...)
 PERMISSION_KEYS = {"allow", "deny", "ask"}
-SEVERITY_ORDER = {"error": 0, "warn": 1}
-
-CHECKS = {
-    "DAA001": "Agent local settings file is tracked by git",
-    "DAA002": "Literal secret saved in agent config",
-    "DAA003": "Agent config is not ignored by the repo itself",
-    "DAA004": "npm package would publish agent config",
-}
-
-
-@dataclass
-class Finding:
-    check: str
-    rule: str
-    severity: str  # "error" | "warn"
-    file: str
-    message: str
-    line: int | None = None
-    location: str = ""
-    snippet: str = ""
-    commit: str | None = None
-    fingerprint: str = ""
-    raw: str = field(default="", repr=False)  # original value, never printed
-    secret: str = field(default="", repr=False)  # the secret itself, only for de-duplication, never printed
-
-    def to_dict(self) -> dict:
-        d = asdict(self)
-        d.pop("raw")
-        d.pop("secret")
-        return d
-
-    @property
-    def dedupe_key(self) -> tuple[str, str, str]:
-        # Uses the real secret: two different passwords are two findings, even if the
-        # rule text around them is identical (e.g. a password rotated across commits).
-        return (self.file, self.rule, self.secret or self.fingerprint)
-
-
-@dataclass
-class ScanResult:
-    root: Path
-    repo: Path | None
-    files: list[str]
-    findings: list[Finding]
-    notes: list[str]
-
-    @property
-    def errors(self) -> list[Finding]:
-        return [f for f in self.findings if f.severity == "error"]
-
-    @property
-    def warnings(self) -> list[Finding]:
-        return [f for f in self.findings if f.severity == "warn"]
+LOCAL_ONLY_NOTE = " (local only: this file is untracked and git-ignored, but the secret is still in plain text on disk)"
 
 
 # -- file discovery -------------------------------------------------------------
 
 
-def is_agent_file(relpath: str) -> bool:
-    parts = PurePosixPath(relpath).parts
+def is_agent_file(path: str) -> bool:
+    parts = PurePosixPath(path).parts
     if not parts:
         return False
-    if parts[-1] in AGENT_FILE_NAMES:
-        return True
-    return len(parts) >= 2 and (parts[-2], parts[-1]) in AGENT_FILES
+    return parts[-1] in AGENT_FILE_NAMES or (len(parts) >= 2 and (parts[-2], parts[-1]) in AGENT_FILES)
 
 
 def find_agent_files(root: Path) -> tuple[list[Path], list[Path]]:
     """Return (agent config files, `.claude` directories) under root."""
-    files: list[Path] = []
-    claude_dirs: list[Path] = []
     if root.is_file():
         return ([root] if is_agent_file(root.as_posix()) else []), []
+    files: list[Path] = []
+    claude_dirs: list[Path] = []
     for dirpath, dirnames, filenames in os.walk(root):
         dirnames[:] = sorted(d for d in dirnames if d not in SKIP_DIRS)
         here = Path(dirpath)
         if here.name == ".claude":
             claude_dirs.append(here)
-        for name in sorted(filenames):
-            p = here / name
-            if is_agent_file(p.as_posix()):
-                files.append(p)
+        files += [here / n for n in sorted(filenames) if is_agent_file((here / n).as_posix())]
     return files, claude_dirs
 
 
@@ -123,32 +67,19 @@ def find_agent_files(root: Path) -> tuple[list[Path], list[Path]]:
 def unwrap_rule(rule: str) -> str:
     """`Bash(npm run test:*)` -> `npm run test`."""
     m = RULE_WRAPPER_RE.match(rule)
-    inner = m.group(1) if m else rule
-    inner = inner.strip()
+    inner = (m.group(1) if m else rule).strip()
     for suffix in (":*", " *", "*"):
         if inner.endswith(suffix):
-            inner = inner[: -len(suffix)].rstrip()
-            break
+            return inner[: -len(suffix)].rstrip()
     return inner
 
 
 def _line_of(text: str, value: str, secret: str) -> int | None:
-    for needle in (
-        json.dumps(value, ensure_ascii=False)[1:-1],
-        json.dumps(value)[1:-1],
-        secret,
-    ):
-        if needle:
-            idx = text.find(needle)
-            if idx >= 0:
-                return text.count("\n", 0, idx) + 1
+    for needle in (json.dumps(value, ensure_ascii=False)[1:-1], json.dumps(value)[1:-1], secret):
+        idx = text.find(needle) if needle else -1
+        if idx >= 0:
+            return text.count("\n", 0, idx) + 1
     return None
-
-
-def _fingerprint(file: str, rule: str, value: str, secret: str) -> str:
-    # Hash the value with the secret removed, so the fingerprint never encodes the secret.
-    basis = f"{file}|{rule}|{value.replace(secret, '<SECRET>')}"
-    return hashlib.sha256(basis.encode()).hexdigest()[:12]
 
 
 def scan_json_text(text: str, relpath: str, det: Detector) -> list[Finding]:
@@ -162,13 +93,10 @@ def scan_json_text(text: str, relpath: str, det: Detector) -> list[Finding]:
 
     def emit(hits: list[Hit], location: str, value: str) -> None:
         for h in hits:
-            key = (location, h.secret)
-            if key in seen:
+            if (location, h.secret) in seen:
                 continue
-            seen.add(key)
+            seen.add((location, h.secret))
             snippet = value.replace(h.secret, mask(h.secret))
-            if len(snippet) > 200:
-                snippet = snippet[:197] + "..."
             findings.append(
                 Finding(
                     check="DAA002",
@@ -177,31 +105,33 @@ def scan_json_text(text: str, relpath: str, det: Detector) -> list[Finding]:
                     file=relpath,
                     line=_line_of(text, value, h.secret),
                     location=location,
-                    snippet=snippet,
+                    snippet=snippet if len(snippet) <= 200 else snippet[:197] + "...",
                     message=h.message,
-                    fingerprint=_fingerprint(relpath, h.rule_id, value, h.secret),
+                    # The secret is replaced before hashing, so the fingerprint never encodes it.
+                    fingerprint=fingerprint(relpath, h.rule_id, value.replace(h.secret, "<SECRET>")),
                     raw=value,
                     secret=h.secret,
                 )
             )
 
     def walk(node, path: str) -> None:
-        if isinstance(node, dict):
+        if isinstance(node, list):
+            for i, item in enumerate(node):
+                walk(item, f"{path}[{i}]")
+        elif isinstance(node, str):
+            emit(det.scan_text(node), path, node)
+        elif isinstance(node, dict):
             for k, v in node.items():
                 p = f"{path}.{k}" if path else str(k)
                 if k == "env" and isinstance(v, dict):
                     for name, val in v.items():
                         if isinstance(val, str):
-                            hits = det.scan_text(val)
                             h = det.env_value(str(name), val, in_command=False)
-                            if h:
-                                hits.append(h)
-                            emit(hits, f"{p}.{name}", f"{name}={val}")
+                            emit(det.scan_text(val) + ([h] if h else []), f"{p}.{name}", f"{name}={val}")
                 elif k == "headers" and isinstance(v, dict):
                     for name, val in v.items():
                         if isinstance(val, str):
-                            line = f"{name}: {val}"
-                            emit(det.scan_text(line), f"{p}.{name}", line)
+                            emit(det.scan_text(f"{name}: {val}"), f"{p}.{name}", f"{name}: {val}")
                 elif k in PERMISSION_KEYS and isinstance(v, list):
                     for i, item in enumerate(v):
                         if isinstance(item, str):
@@ -215,11 +145,6 @@ def scan_json_text(text: str, relpath: str, det: Detector) -> list[Finding]:
                     emit(det.scan_command(v), p, v)
                 else:
                     walk(v, p)
-        elif isinstance(node, list):
-            for i, item in enumerate(node):
-                walk(item, f"{path}[{i}]")
-        elif isinstance(node, str):
-            emit(det.scan_text(node), path, node)
 
     walk(data, "")
     return findings
@@ -255,23 +180,19 @@ def scan_history(repo: Path, det: Detector) -> tuple[list[Finding], dict[str, st
             continue
         for f in scan_json_text(text, path, det):
             f.commit = commit[:12]
-            key = f.dedupe_key
-            by_key[key] = f  # newest-first, so the last write is the oldest commit
-            seen_in[key] = seen_in.get(key, 0) + 1
+            by_key[f.dedupe_key] = f  # newest-first, so the last write is the oldest commit
+            seen_in[f.dedupe_key] = seen_in.get(f.dedupe_key, 0) + 1
         if PurePosixPath(path).name == "settings.local.json":
             past_local[path] = commit[:12]
 
-    findings = []
     for key, f in by_key.items():
         n = seen_in[key]
         f.message = (
             f"In git history (first in commit {f.commit}"
             + (f", present in {n} commits" if n > 1 else "")
-            + "), still readable by anyone with a clone or fork. "
-            + f.message
+            + f"), still readable by anyone with a clone or fork. {f.message}"
         )
-        findings.append(f)
-    return findings, past_local
+    return list(by_key.values()), past_local
 
 
 # -- orchestration --------------------------------------------------------------
@@ -284,87 +205,90 @@ def _rel(p: Path, base: Path) -> str:
         return p.as_posix()
 
 
-def load_ignores(root: Path) -> set[str]:
+def _mark_local_only(repo: Path, findings: list[Finding]) -> None:
+    """Downgrade secrets in files that are untracked and git-ignored: they stay on this machine."""
+    files = sorted({f.file for f in findings if f.check == "DAA002"})
+    tracked = git.tracked(repo, [f":(literal){p}" for p in files])
+    sources = git.ignore_sources(repo, [p for p in files if p not in tracked])
+    local_only = {p for p, src in sources.items() if src is not None}
+    for f in findings:
+        if f.check == "DAA002" and f.file in local_only:
+            f.severity = "warn"
+            f.message += LOCAL_ONLY_NOTE
+
+
+def _git_checks(repo: Path, claude_dirs: list[str], skip: set[str], notes: list[str]) -> list[Finding]:
+    out: list[Finding] = []
+    if "DAA001" not in skip:
+        out += checks.tracked_local_settings(repo)
+    if claude_dirs and "DAA003" not in skip:
+        out += checks.ignore_travels(repo, claude_dirs) + checks.dockerignore(repo)
+    if claude_dirs and "DAA004" not in skip:
+        npm_findings, npm_notes = checks.npm_pack(repo)
+        out += npm_findings
+        notes += npm_notes
+    return out
+
+
+def _history_findings(repo: Path, det: Detector, current: list[Finding]) -> list[Finding]:
+    current_keys = {f.dedupe_key for f in current}
+    hist, past_local = scan_history(repo, det)
+    out = [f for f in hist if f.dedupe_key not in current_keys]
+    tracked_now = {f.file for f in current if f.check == "DAA001"}
+    out += [
+        Finding(
+            check="DAA001",
+            rule="local-settings-in-history",
+            severity="warn",
+            file=p,
+            commit=commit,
+            message=f"Was committed in the past (commit {commit}). It is still in git history and in every clone and fork.",
+        )
+        for p, commit in sorted(past_local.items())
+        if p not in tracked_now
+    ]
+    return out
+
+
+def _apply_ignores(findings: list[Finding], root: Path, notes: list[str]) -> list[Finding]:
     f = root / ".daaignore"
     if not f.is_file():
-        return set()
-    out = set()
-    for line in f.read_text(encoding="utf-8").splitlines():
-        line = line.split("#", 1)[0].strip()
-        if line:
-            out.add(line)
-    return out
+        return findings
+    ignores = {ln.split("#", 1)[0].strip() for ln in f.read_text(encoding="utf-8").splitlines()} - {""}
+    kept = [x for x in findings if x.fingerprint not in ignores]
+    if len(kept) != len(findings):
+        notes.append(f"{len(findings) - len(kept)} finding(s) suppressed by .daaignore")
+    return kept
 
 
 def scan(
     path: str | Path = ".",
     rules: RulePack | None = None,
     history: bool = False,
-    git_checks: bool = True,
-    skip: set[str] | None = None,
+    skip: set[str] | frozenset[str] = frozenset(),
 ) -> ScanResult:
     root = Path(path).resolve()
     det = Detector(rules or load_rules())
-    skip = skip or set()
+    skip = {s.upper() for s in skip}
     repo = git.repo_root(root)
     base = repo or (root if root.is_dir() else root.parent)
     notes: list[str] = []
 
     files, claude_dirs = find_agent_files(root)
-    findings: list[Finding] = []
+    rels = [_rel(f, base) for f in files]
+    findings = [x for f, rel in zip(files, rels) for x in scan_json_text(f.read_text(encoding="utf-8", errors="replace"), rel, det)]
 
-    for f in files:
-        rel = _rel(f, base)
-        file_findings = scan_json_text(f.read_text(encoding="utf-8", errors="replace"), rel, det)
-        if file_findings and repo and not git.is_tracked(repo, rel):
-            ignored, _ = git.check_ignore(repo, rel)
-            if ignored:
-                # Only on this machine. Still plain text on disk, but not about to leak via git.
-                for ff in file_findings:
-                    ff.severity = "warn"
-                    ff.message += " (local only: this file is untracked and git-ignored, but the secret is still in plain text on disk)"
-        findings += file_findings
-
-    if repo and git_checks:
-        findings += checks.tracked_local_settings(repo)
-        claude_rel = [_rel(d, repo) for d in claude_dirs]
-        findings += checks.ignore_travels(repo, claude_rel)
-        findings += checks.dockerignore(repo, bool(claude_dirs))
-        npm_findings, npm_notes = checks.npm_pack(repo, bool(claude_dirs) and "DAA004" not in skip)
-        findings += npm_findings
-        notes += npm_notes
-    elif git_checks and not repo:
-        notes.append("not a git repository: skipped DAA001, DAA003 and DAA004")
-
-    if history:
-        if repo:
-            current = {f.dedupe_key for f in findings}
-            hist, past_local = scan_history(repo, det)
-            findings += [f for f in hist if f.dedupe_key not in current]
-            tracked_now = {f.file for f in findings if f.check == "DAA001"}
-            for p, commit in sorted(past_local.items()):
-                if p not in tracked_now:
-                    findings.append(
-                        Finding(
-                            check="DAA001",
-                            rule="local-settings-in-history",
-                            severity="warn",
-                            file=p,
-                            commit=commit,
-                            message=f"Was committed in the past (commit {commit}). It is still in git history and in every clone and fork.",
-                            fingerprint=hashlib.sha256(f"hist|{p}".encode()).hexdigest()[:12],
-                        )
-                    )
-        else:
+    if repo:
+        _mark_local_only(repo, findings)
+        findings += _git_checks(repo, [_rel(d, repo) for d in claude_dirs], skip, notes)
+        if history:
+            findings += _history_findings(repo, det, findings)
+    else:
+        if not GIT_CHECKS <= skip:
+            notes.append("not a git repository: skipped DAA001, DAA003 and DAA004")
+        if history:
             notes.append("--history needs a git repository: skipped")
 
-    findings = [f for f in findings if f.check not in skip]
-    ignores = load_ignores(repo or base)
-    if ignores:
-        before = len(findings)
-        findings = [f for f in findings if f.fingerprint not in ignores]
-        if before != len(findings):
-            notes.append(f"{before - len(findings)} finding(s) suppressed by .daaignore")
-
+    findings = _apply_ignores([f for f in findings if f.check not in skip], repo or base, notes)
     findings.sort(key=lambda f: (SEVERITY_ORDER.get(f.severity, 9), f.check, f.file, f.line or 0))
-    return ScanResult(root=root, repo=repo, files=[_rel(f, base) for f in files], findings=findings, notes=notes)
+    return ScanResult(root=root, repo=repo, files=rels, findings=findings, notes=notes)

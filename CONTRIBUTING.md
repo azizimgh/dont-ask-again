@@ -4,7 +4,7 @@ Thanks for helping. The most useful contributions are **new patterns** and **fal
 
 ## Add a pattern (most common)
 
-1. Add an entry to [`src/dont_ask_again/rules.toml`](src/dont_ask_again/rules.toml). The file explains each rule kind (`env`, `flag`, `header`, `url`, `pattern`).
+1. Add an entry to [`src/dont_ask_again/rules.toml`](src/dont_ask_again/rules.toml). The file explains the three rule kinds (`env`, `flag`, `regex`) and the flag notation (`-p`, `-p...`, `--password`, `--password=`).
 2. Add the permission rule as Claude Code would save it to `POSITIVE` in [`tests/cases.py`](tests/cases.py), with the expected rule id.
 3. If there is a safe form that must **not** be flagged (e.g. `$VAR`), add it to `NEGATIVE`.
 4. Run the tests:

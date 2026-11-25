@@ -74,6 +74,15 @@ class TestHelpers(unittest.TestCase):
         self.assertEqual(unwrap_rule("Bash(ls -la)"), "ls -la")
         self.assertEqual(unwrap_rule("plain"), "plain")
 
+    def test_flag_notation(self):
+        from dont_ask_again.rules import ATTACHED, EQ, NEXT_OR_ATTACHED, NEXT_OR_EQ, parse_flag
+
+        self.assertEqual(parse_flag("-p"), ("-p", NEXT_OR_ATTACHED))
+        self.assertEqual(parse_flag("-p..."), ("-p", ATTACHED))
+        self.assertEqual(parse_flag("-p…"), ("-p", ATTACHED))
+        self.assertEqual(parse_flag("--password"), ("--password", NEXT_OR_EQ))
+        self.assertEqual(parse_flag("--password="), ("--password", EQ))
+
     def test_mask(self):
         self.assertEqual(mask("abc"), "******")
         self.assertEqual(mask("Hunter2xyz"), "Hu******")
