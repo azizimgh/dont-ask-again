@@ -28,3 +28,16 @@ Open an issue with a **fake** version of the rule that was flagged (replace the 
 - Python 3.11+, standard library only. Please keep it dependency-free.
 - `python -m dont_ask_again scan PATH` runs from a checkout (`PYTHONPATH=src`).
 - `python bench/run_bench.py` compares with gitleaks/TruffleHog if they are installed.
+
+## Releasing (maintainer)
+
+1. Bump `version` in `pyproject.toml` and `__version__` in `src/dont_ask_again/__init__.py` in a PR, and merge it.
+2. Tag the merge commit and push the tag:
+
+   ```bash
+   git tag v0.1.0 && git push origin v0.1.0
+   ```
+
+3. The `release` workflow checks the tag matches both versions, runs the tests, builds, publishes to
+   PyPI with trusted publishing (no token stored anywhere), and creates the GitHub release.
+   The pre-commit hook and the Action are referenced by that tag.
