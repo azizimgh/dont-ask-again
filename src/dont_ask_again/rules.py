@@ -39,7 +39,7 @@ class FlagRule:
     flags: tuple[tuple[str, str], ...] = ()  # (flag, how) from parse_flag
     requires: tuple[str, ...] = ()           # a word that must follow the program first (e.g. "login")
     exclude_programs: tuple[str, ...] = ()
-    positional: bool = False                 # first plain argument after `requires`
+    positional: int = 0                      # take the Nth plain argument (after `requires`); 0 = off
     value: re.Pattern[str] | None = None
 
 
@@ -83,7 +83,7 @@ def load_rules(path: str | Path | None = None) -> RulePack:
                 flags=tuple(parse_flag(s) for s in f.get("flags", ())),
                 requires=tuple(f.get("requires", ())),
                 exclude_programs=tuple(f.get("exclude_programs", ())),
-                positional=bool(f.get("positional", False)),
+                positional=int(f.get("positional", 0)),  # `true` counts as 1
                 value=re.compile(f["value"]) if "value" in f else None,
             )
             for f in data.get("flag", [])

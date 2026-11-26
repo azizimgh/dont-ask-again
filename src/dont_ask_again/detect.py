@@ -162,10 +162,8 @@ class Detector:
 
 def _flag_values(r: FlagRule, rest: list[str]) -> list[str]:
     if r.positional:
-        for t in rest:
-            if not t.startswith("-") and "=" not in t:
-                return [t]
-        return []
+        plain = [t for t in rest if not t.startswith("-") and "=" not in t]
+        return plain[r.positional - 1 : r.positional]
 
     out = []
     for k, t in enumerate(rest):

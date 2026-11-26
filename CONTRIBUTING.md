@@ -16,8 +16,8 @@ Thanks for helping. The most useful contributions are **new patterns** and **fal
 **Only use fake secrets.** For known token formats (`ghp_…`, `AKIA…`), build the string with
 `S("gh", "p_", ...)` so this repo never matches GitHub push protection.
 
-Good first patterns to add: `mongosh -p`, `psql "password=…"` connection strings,
-`htpasswd -b`, `az login -p`, `gcloud … --access-token-file` vs literal tokens, `.codex/config.toml`.
+Good first patterns to add: `kubectl config set-credentials --password`, `gcloud auth activate-service-account --key-file` vs inline keys,
+`heroku auth:token`, `pscp -pw`, `plink -pw`, `ftp://user:pass@` in `lftp -u user,pass`, Codex `~/.codex/rules` approvals.
 
 ## Report a false positive
 

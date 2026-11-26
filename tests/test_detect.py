@@ -64,6 +64,33 @@ class TestMcpConfig(unittest.TestCase):
             ["generic-secret-flag", "github-token", "header-authorization"],
         )
 
+    def test_codex_config_toml(self):
+        toml = (
+            "[mcp_servers.github]\n"
+            'command = "npx"\n'
+            'args = ["-y", "server-github"]\n'
+            f'env = {{ GITHUB_TOKEN = "{FAKE_GH}", LOG_LEVEL = "debug" }}\n'
+            "\n[mcp_servers.remote]\n"
+            'url = "https://mcp.example.com/mcp"\n'
+            'bearer_token = "Remote-Bearer-Tok-123456"\n'
+            'http_headers = { "X-API-Key" = "Codex-Hdr-Key-98765" }\n'
+            "\n[mcp_servers.safe]\n"
+            'command = "node"\n'
+            'env = { API_KEY = "${API_KEY}" }\n'
+        )
+        findings = scan_json_text(toml, ".codex/config.toml", DET)
+        self.assertEqual(sorted(f.rule for f in findings), ["env-secret-literal", "github-token", "header-api-key"])
+        self.assertTrue(all(f.line for f in findings))
+
+    def test_secret_named_keys_in_json(self):
+        cfg = {"mcpServers": {"x": {"url": "https://mcp.example.com", "apiKey": "Camel-Key-Value-66", "api_key": "Snake-Key-Value-77",
+                                    "token": "${TOKEN}", "tokenUrl": "https://auth.example.com/token"}}}
+        findings = scan_json_text(json.dumps(cfg), ".mcp.json", DET)
+        self.assertEqual(
+            sorted((f.rule, f.location) for f in findings),
+            [("env-secret-literal", "mcpServers.x.apiKey"), ("env-secret-literal", "mcpServers.x.api_key")],
+        )
+
     def test_invalid_json_is_skipped(self):
         self.assertEqual(scan_json_text("{not json", ".mcp.json", DET), [])
 

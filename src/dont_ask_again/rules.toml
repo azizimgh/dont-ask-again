@@ -13,7 +13,7 @@
 #                "--password"   --password VALUE  or  --password=VALUE
 #                "--password="  only --password=VALUE
 #              Optional: `requires` (a word that must follow the program, e.g. "login"),
-#              `positional = true` (take the first plain argument after `requires`),
+#              `positional = N` (take the Nth plain argument, counted after `requires`),
 #              `value` (regex the value must match; a named group `secret` marks the secret),
 #              `programs = ["*"]` with `exclude_programs` for flags that apply to any program.
 #
@@ -85,15 +85,79 @@ id = "vault-login-token"
 description = "Token passed to vault login"
 programs = ["vault"]
 requires = ["login"]
-positional = true
+positional = 1
 value = '^(?P<secret>[A-Za-z0-9._\-]{16,})$'
+
+[[flag]]
+id = "mongo-password"
+description = "Password passed to a MongoDB client -p / --password"
+programs = ["mongosh", "mongo", "mongodump", "mongorestore", "mongoexport", "mongoimport", "mongostat", "mongotop"]
+flags = ["-p", "--password"]
+
+[[flag]]
+id = "sqlcmd-password"
+description = "Password passed to sqlcmd / bcp -P"
+programs = ["sqlcmd", "bcp"]
+flags = ["-P"]
+
+[[flag]]
+id = "ldap-password"
+description = "Bind password passed to an LDAP tool -w"
+programs = ["ldapsearch", "ldapmodify", "ldapadd", "ldapdelete", "ldapwhoami", "ldappasswd", "ldapcompare", "ldapmodrdn"]
+flags = ["-w"]
+
+[[flag]]
+id = "smbclient-password"
+description = "user%password passed to smbclient -U"
+programs = ["smbclient", "rpcclient", "smbcacls", "smbget"]
+flags = ["-U", "--user"]
+value = '^[^%\s]+%(?P<secret>.+)$'
+
+[[flag]]
+id = "openssl-pass"
+description = "Literal pass:PASSWORD given to openssl"
+programs = ["openssl"]
+flags = ["-passin", "-passout", "-pass", "-password"]
+value = '^pass:(?P<secret>.+)$'
+
+[[flag]]
+id = "az-login-password"
+description = "Password or secret passed to az login -p"
+programs = ["az"]
+requires = ["login"]
+flags = ["-p", "--password"]
+
+[[flag]]
+id = "doctl-token"
+description = "Token passed to doctl auth init -t"
+programs = ["doctl"]
+flags = ["-t"]
+
+[[flag]]
+id = "curl-oauth2-bearer"
+description = "Token passed to curl --oauth2-bearer"
+programs = ["curl"]
+flags = ["--oauth2-bearer"]
+
+[[flag]]
+id = "htpasswd-batch-password"
+description = "Password passed to htpasswd -b (third argument: file user password)"
+programs = ["htpasswd"]
+positional = 3
+
+[[flag]]
+id = "rabbitmqctl-password"
+description = "Password passed to rabbitmqctl add_user / change_password"
+programs = ["rabbitmqctl"]
+requires = ["add_user", "change_password"]
+positional = 2
 
 [[flag]]
 id = "generic-secret-flag"
 description = "Secret passed in a --password / --token style flag"
 programs = ["*"]
 exclude_programs = ["mysql", "mariadb", "mysqldump", "mysqladmin", "mysqlimport", "mysqlsh", "mariadb-dump"]
-flags = ["--password", "--passwd", "--token", "--api-key", "--apikey", "--auth-token", "--access-token", "--client-secret", "--bearer-token"]
+flags = ["--password", "--passwd", "--http-password", "--ftp-password", "--proxy-password", "--token", "--api-key", "--apikey", "--auth-token", "--access-token", "--client-secret", "--bearer-token"]
 
 # -- regex: known token formats (specific first) -----------------------------------
 
@@ -151,6 +215,11 @@ regex = '\bAIza[0-9A-Za-z_\-]{35}\b'
 id = "vault-token"
 description = "HashiCorp Vault token"
 regex = '\bhv[sb]\.[A-Za-z0-9_\-]{20,}'
+
+[[regex]]
+id = "npm-auth-token"
+description = "npm registry _authToken / _password"
+regex = '''(?<![A-Za-z0-9])(?:_authToken|_auth|_password)\s*[=\s]\s*["']?(?P<secret>[^\s"']{8,})'''
 
 # -- regex: headers and URLs -------------------------------------------------------
 
