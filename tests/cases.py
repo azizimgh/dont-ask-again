@@ -1,18 +1,36 @@
 """Test corpus shared by the unit tests and bench/run_bench.py.
 
-Every secret here is FAKE. Known-format tokens are assembled at runtime with
-S() so this repo itself never matches GitHub push protection or other scanners.
+Every secret here is FAKE. Token-style values are random but seeded, so runs are
+repeatable and they look like real tokens (high entropy). That keeps the
+benchmark fair: gitleaks and TruffleHog rightly ignore low-entropy strings such
+as "FakeKeyForTests". They are assembled at runtime, so this repo itself never
+contains a token-shaped string for push protection or other scanners to match.
+Human-style passwords (e.g. Tr0ub4dor-77) stay readable, because real ones look like that.
 """
+
+import random
+import string
+
+_RNG = random.Random(20261125)
+_ALNUM = string.ascii_letters + string.digits
 
 
 def S(*parts: str) -> str:
     return "".join(parts)
 
 
-FAKE_GH = S("gh", "p_", "Zq7Lm2Xw9Rt4" * 3)
-FAKE_ANT = S("sk-", "ant-", "api03-", "FakeKeyForTests" * 2)
-FAKE_AKIA = S("AK", "IA", "Q3FAKEFAKEFAKE7Z")
-FAKE_VAULT = S("hv", "s.", "CAESIFakeVaultTokenForTests123")
+def R(n: int, alphabet: str = _ALNUM) -> str:
+    """Seeded random characters: a fake that looks like a real token."""
+    return "".join(_RNG.choice(alphabet) for _ in range(n))
+
+
+FAKE_GH = S("gh", "p_", R(36))
+FAKE_ANT = S("sk-", "ant-", "api03-", R(93, _ALNUM + "-_"), "AA")
+FAKE_AKIA = S("AK", "IA", R(16, string.ascii_uppercase + "234567"))
+FAKE_AWS_SECRET = R(40, _ALNUM + "+/")
+FAKE_VAULT = S("hv", "s.", R(90, _ALNUM + "_-"))
+FAKE_BEARER = R(40, _ALNUM)
+FAKE_API_KEY = R(32, string.hexdigits.lower()[:16])
 
 # (permission rule as Claude Code saves it, expected rule id)
 POSITIVE = [
@@ -34,17 +52,17 @@ POSITIVE = [
     ("Bash(helm registry login ghcr.io --username bot --password Helm-Pw-123)", "registry-login-password"),
     ("Bash(curl -u admin:Adm1n-Pass https://jenkins.local/api/json)", "curl-user-password"),
     ("Bash(kubectl --token=eyJhbGciOiJSUzI1NiJ9.fake.sig get pods)", "generic-secret-flag"),
-    ('Bash(curl -H "Authorization: Bearer abcd1234efgh5678ijkl" https://api.example.com/v1/me)', "header-authorization"),
-    ('Bash(curl https://api.example.com -H "X-API-Key: k3y-12345-abcde")', "header-api-key"),
+    (f'Bash(curl -H "Authorization: Bearer {FAKE_BEARER}" https://api.example.com/v1/me)', "header-authorization"),
+    (f'Bash(curl https://api.example.com -H "X-API-Key: {FAKE_API_KEY}")', "header-api-key"),
     ("Bash(psql postgres://app:Pg-Url-Pass-1@db.internal:5432/app)", "url-credentials"),
     ('Bash(mongosh "mongodb+srv://admin:M0ngo-Pass@cluster0.example.net/test")', "url-credentials"),
-    ('Bash(curl "https://api.example.com/v1/data?api_key=QueryKey12345")', "url-query-secret"),
+    (f'Bash(curl "https://api.example.com/v1/data?api_key={FAKE_API_KEY}")', "url-query-secret"),
     (f"Bash(git clone https://x-access-token:{FAKE_GH}@github.com/org/repo.git)", "github-token"),
     (f"Bash(GITHUB_TOKEN={FAKE_GH} gh pr list)", "github-token"),
     (f"Bash(vault login {FAKE_VAULT})", "vault-token"),
     (f"Bash(ANTHROPIC_API_KEY={FAKE_ANT} python run.py)", "anthropic-api-key"),
     (f"Bash(AWS_ACCESS_KEY_ID={FAKE_AKIA} aws s3 ls)", "aws-access-key-id"),
-    ("Bash(AWS_SECRET_ACCESS_KEY=wJalrFakeSecretKeyForTestsOnly1234567890 aws s3 ls)", "env-secret-literal"),
+    (f"Bash(AWS_SECRET_ACCESS_KEY={FAKE_AWS_SECRET} aws s3 ls)", "env-secret-literal"),
 ]
 
 # Rules that must NOT be flagged.

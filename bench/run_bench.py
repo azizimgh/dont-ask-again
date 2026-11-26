@@ -62,36 +62,61 @@ def trufflehog(d: Path) -> bool | None:
     return any(line.strip().startswith("{") and '"SourceMetadata"' in line for line in p.stdout.splitlines())
 
 
+def program(rule: str) -> str:
+    """The command name only, so the table never shows a (fake) secret."""
+    words = rule.split("(", 1)[-1].split()
+    return next((w for w in words if "=" not in w and w != "export"), words[0].split("=")[0])
+
+
 def cell(v: bool | None) -> str:
     return "n/a" if v is None else ("✅" if v else "❌")
 
 
+def version(exe: str) -> str:
+    path = shutil.which(exe)
+    if not path:
+        return "not installed"
+    p = subprocess.run([path, "--version"], capture_output=True, text=True)
+    return (p.stdout or p.stderr).strip().splitlines()[0] if (p.stdout or p.stderr).strip() else "unknown"
+
+
 def main() -> int:
     tools = {"dont-ask-again": ours, "gitleaks": gitleaks, "trufflehog": trufflehog}
-    totals = {t: 0 for t in tools}
-    installed = {t: True for t in tools}
+    installed = {"dont-ask-again": True, "gitleaks": bool(shutil.which("gitleaks")), "trufflehog": bool(shutil.which("trufflehog"))}
+    caught = {t: 0 for t in tools}
+    false_pos = {t: 0 for t in tools}
     rows = []
     with tempfile.TemporaryDirectory(prefix="daa-bench-") as tmp:
         base = Path(tmp)
         for i, (rule, expected) in enumerate(POSITIVE):
             d = write_case(base, i, rule)
             res = {t: fn(d) for t, fn in tools.items()}
-            for t, v in res.items():
-                if v is None:
-                    installed[t] = False
-                elif v:
-                    totals[t] += 1
-            rows.append((expected, res))
+            caught.update({t: caught[t] + 1 for t, v in res.items() if v})
+            rows.append((program(rule), expected, res))
+        for i, rule in enumerate(NEGATIVE):
+            d = write_case(base, 100 + i, rule)
+            res = {t: fn(d) for t, fn in tools.items()}
+            false_pos.update({t: false_pos[t] + 1 for t, v in res.items() if v})
 
-        fp = sum(ours(write_case(base, 100 + i, r)) for i, r in enumerate(NEGATIVE))
+    others = [t for t in tools if t != "dont-ask-again" and installed[t]]
+    missed_by_others = sum(1 for _, _, res in rows if others and not any(res[t] for t in others))
 
-    print("| case (expected rule) | " + " | ".join(tools) + " |")
-    print("|---|" + "---|" * len(tools))
-    for expected, res in rows:
-        print(f"| {expected} | " + " | ".join(cell(res[t]) for t in tools) + " |")
-    n = len(POSITIVE)
-    print("| **caught** | " + " | ".join(f"**{totals[t]}/{n}**" if installed[t] else "not installed" for t in tools) + " |")
-    print(f"\ndont-ask-again false positives on {len(NEGATIVE)} safe rules: {fp}")
+    n, m = len(POSITIVE), len(NEGATIVE)
+    print("## Benchmark: secrets in Claude Code permission rules\n")
+    print("Every secret in the corpus is fake. Each case is one `.claude/settings.local.json`.\n")
+    print("| case | expected rule | " + " | ".join(tools) + " |")
+    print("|---|---|" + "---|" * len(tools))
+    for start, expected, res in rows:
+        print(f"| `{start}` | {expected} | " + " | ".join(cell(res[t]) for t in tools) + " |")
+
+    def total(counts: dict[str, int], t: str, of: int) -> str:
+        return f"**{counts[t]}/{of}**" if installed[t] else "not installed"
+
+    print("| **caught** | | " + " | ".join(total(caught, t, n) for t in tools) + " |")
+    print(f"| **false positives** (on {m} safe rules) | | " + " | ".join(total(false_pos, t, m) for t in tools) + " |")
+    if others:
+        print(f"\nCases missed by every other installed tool ({', '.join(others)}): **{missed_by_others}/{n}**")
+    print("\nVersions: " + "; ".join(f"{t} {version(t) if t != 'dont-ask-again' else ''}".strip() for t in tools))
     return 0
 
 
