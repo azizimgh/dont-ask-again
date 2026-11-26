@@ -1,0 +1,41 @@
+name: benchmark
+
+# Compares dont-ask-again with gitleaks and TruffleHog on the fake corpus in tests/cases.py.
+# The table goes to the job summary. Informational only: never fails the build.
+
+on:
+  pull_request:
+    paths:
+      - "src/**"
+      - "tests/cases.py"
+      - "bench/**"
+      - ".github/workflows/benchmark.yml"
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  bench:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install gitleaks and TruffleHog (latest releases)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/bin"
+          gh release download --repo gitleaks/gitleaks --pattern '*_linux_x64.tar.gz' --dir "$RUNNER_TEMP/gl"
+          tar -xzf "$RUNNER_TEMP"/gl/*.tar.gz -C "$RUNNER_TEMP/bin" gitleaks
+          gh release download --repo trufflesecurity/trufflehog --pattern '*_linux_amd64.tar.gz' --dir "$RUNNER_TEMP/th"
+          tar -xzf "$RUNNER_TEMP"/th/*.tar.gz -C "$RUNNER_TEMP/bin" trufflehog
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+
+      - name: Run benchmark
+        run: python bench/run_bench.py | tee -a "$GITHUB_STEP_SUMMARY"
