@@ -62,6 +62,12 @@ def trufflehog(d: Path) -> bool | None:
     return any(line.strip().startswith("{") and '"SourceMetadata"' in line for line in p.stdout.splitlines())
 
 
+def program(rule: str) -> str:
+    """The command name only, so the table never shows a (fake) secret."""
+    words = rule.split("(", 1)[-1].split()
+    return next((w for w in words if "=" not in w and w != "export"), words[0].split("=")[0])
+
+
 def cell(v: bool | None) -> str:
     return "n/a" if v is None else ("✅" if v else "❌")
 
@@ -86,7 +92,7 @@ def main() -> int:
             d = write_case(base, i, rule)
             res = {t: fn(d) for t, fn in tools.items()}
             caught.update({t: caught[t] + 1 for t, v in res.items() if v})
-            rows.append((rule.split("(", 1)[1].split()[0], expected, res))
+            rows.append((program(rule), expected, res))
         for i, rule in enumerate(NEGATIVE):
             d = write_case(base, 100 + i, rule)
             res = {t: fn(d) for t, fn in tools.items()}
