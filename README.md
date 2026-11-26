@@ -60,16 +60,17 @@ Secrets are always masked in the output. The full value is never printed.
 
 Files scanned: `.claude/settings.local.json`, `.claude/settings.json`, `.mcp.json`,
 `.cursor/mcp.json`, `.vscode/mcp.json`, `.gemini/settings.json`, `.windsurf/mcp.json`,
-at any depth.
+`.codex/config.toml`, at any depth.
 
 What DAA002 catches (`dont-ask-again rules` lists them all):
 
-- **Env assignments:** `PGPASSWORD=…`, `MYSQL_PWD=…`, `export DB_PASSWORD=…`, `*_TOKEN=…`, `*_API_KEY=…`, `kubectl --from-literal=password=…`
-- **Password flags:** `sshpass -p`, `mysql -pX` / `--password=`, `redis-cli -a`, `docker|podman|helm login -p`, `curl -u user:pass`, `vault login <token>`, `--token`, `--api-key`
+- **Env assignments:** `PGPASSWORD=…`, `MYSQL_PWD=…`, `export DB_PASSWORD=…`, `*_TOKEN=…`, `*_API_KEY=…`, `kubectl --from-literal=password=…`, libpq `"host=… password=…"`
+- **Password flags:** `sshpass -p`, `mysql -pX` / `--password=`, `mongosh -p`, `sqlcmd -P`, `redis-cli -a`, `ldapsearch -w`, `smbclient -U user%pass`, `openssl -passin pass:…`, `htpasswd -b`, `rabbitmqctl add_user`, `docker|podman|helm|az login -p`, `curl -u user:pass` / `--oauth2-bearer`, `vault login <token>`, `doctl auth init -t`, `--token`, `--api-key`, `--http-password`
 - **Inside wrappers:** `bash -c '…'`, `docker exec db mysql -p…`, commands chained with `&&`, `;` and `|`
 - **Headers:** `Authorization: Bearer …`, `X-API-Key: …`
 - **URLs:** `postgres://user:pass@host`, `?api_key=…`
-- **Known formats:** GitHub, GitLab, npm, AWS, Slack, Stripe, Google, Anthropic, OpenAI, Vault tokens and private keys
+- **Config keys named like secrets:** `"api_key": "…"`, `bearer_token = "…"`, MCP `env`, `headers` and Codex `http_headers`
+- **Known formats:** GitHub, GitLab, npm (incl. `_authToken`), AWS, Slack, Stripe, Google, Anthropic, OpenAI, Vault tokens and private keys
 
 It skips references, which are the safe way to write these commands:
 `PGPASSWORD="$PGPASSWORD"`, `${TOKEN}`, `$(cat file)`, `<password>`, and wildcards like `PGPASSWORD=*`.

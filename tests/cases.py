@@ -63,6 +63,20 @@ POSITIVE = [
     (f"Bash(ANTHROPIC_API_KEY={FAKE_ANT} python run.py)", "anthropic-api-key"),
     (f"Bash(AWS_ACCESS_KEY_ID={FAKE_AKIA} aws s3 ls)", "aws-access-key-id"),
     (f"Bash(AWS_SECRET_ACCESS_KEY={FAKE_AWS_SECRET} aws s3 ls)", "env-secret-literal"),
+    # v0.2 patterns
+    ("Bash(mongosh -u admin -p M0ngoCli-Pw mongodb://db.internal/app)", "mongo-password"),
+    ("Bash(sqlcmd -S db.internal -U sa -P Sql-Pass-9 -Q 'select 1')", "sqlcmd-password"),
+    ("Bash(ldapsearch -x -D cn=admin,dc=example,dc=org -w Ldap-Pass-1 -b dc=example,dc=org)", "ldap-password"),
+    ("Bash(smbclient //files/share -U bob%Smb-Pass-2)", "smbclient-password"),
+    ("Bash(openssl pkcs12 -in cert.p12 -nodes -passin pass:P12-Pass-3)", "openssl-pass"),
+    ("Bash(az login -u ops@example.com -p Azure-Pass-4)", "az-login-password"),
+    (f"Bash(doctl auth init -t dop_v1_{R(64, '0123456789abcdef')})", "doctl-token"),
+    (f"Bash(curl --oauth2-bearer {FAKE_BEARER} https://api.example.com)", "curl-oauth2-bearer"),
+    ("Bash(htpasswd -bc .htpasswd admin Htpw-Pass-5)", "htpasswd-batch-password"),
+    ("Bash(rabbitmqctl add_user app Rabbit-Pass-6)", "rabbitmqctl-password"),
+    (f"Bash(npm config set //registry.npmjs.org/:_authToken {R(36)})", "npm-auth-token"),
+    ('Bash(psql "host=db.internal user=app password=Libpq-Pass-7 dbname=app")', "env-secret-literal"),
+    ("Bash(wget --http-password=Wget-Pass-8 https://files.example.com/a.tgz)", "generic-secret-flag"),
 ]
 
 # Rules that must NOT be flagged.
@@ -91,4 +105,16 @@ NEGATIVE = [
     "Read(./secrets/**)",
     "WebFetch(domain:github.com)",
     "Bash(vault login -method=oidc)",
+    # v0.2 safe forms
+    "Bash(mongosh --host db.internal -u admin)",
+    "Bash(sqlcmd -S db.internal -E)",
+    "Bash(ldapsearch -x -W -D cn=admin,dc=example,dc=org)",
+    "Bash(smbclient //files/share -U bob)",
+    "Bash(openssl rsa -in key.pem -passin env:KEY_PASS)",
+    "Bash(openssl rsa -in key.pem -passin file:./pw.txt)",
+    "Bash(az login --identity)",
+    "Bash(curl --oauth2-bearer $TOKEN https://api.example.com)",
+    "Bash(htpasswd -c .htpasswd admin)",
+    "Bash(rabbitmqctl add_user app)",
+    "Bash(npm config set //registry.npmjs.org/:_authToken ${NPM_TOKEN})",
 ]

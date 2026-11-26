@@ -6,6 +6,7 @@ import json
 import os
 import re
 import shlex
+import tomllib
 from pathlib import Path, PurePosixPath
 
 from . import checks, git
@@ -13,7 +14,7 @@ from .detect import Detector, Hit, mask
 from .models import CHECKS, GIT_CHECKS, SEVERITY_ORDER, Finding, ScanResult, fingerprint
 from .rules import RulePack, load_rules
 
-__all__ = ["CHECKS", "Finding", "ScanResult", "scan", "scan_json_text", "unwrap_rule"]
+__all__ = ["CHECKS", "Finding", "ScanResult", "scan", "scan_config_text", "scan_json_text", "unwrap_rule"]
 
 # (parent dir, file name) pairs that are agent config files
 AGENT_FILES = {
@@ -23,6 +24,7 @@ AGENT_FILES = {
     (".vscode", "mcp.json"),
     (".gemini", "settings.json"),
     (".windsurf", "mcp.json"),
+    (".codex", "config.toml"),
 }
 AGENT_FILE_NAMES = {".mcp.json"}
 SKIP_DIRS = {".git", "node_modules", ".venv", "venv", "__pycache__", ".tox", ".mypy_cache", ".pytest_cache"}
@@ -33,6 +35,7 @@ HISTORY_PATHSPECS = [f":(glob)**/{d}/{n}" for d, n in sorted(AGENT_FILES)] + [
 
 RULE_WRAPPER_RE = re.compile(r"^\s*[A-Za-z][\w.-]*\((.*)\)\s*$", re.S)  # Bash(...), WebFetch(...)
 PERMISSION_KEYS = {"allow", "deny", "ask"}
+HEADER_KEYS = {"headers", "http_headers"}  # Claude/Cursor MCP, Codex
 LOCAL_ONLY_NOTE = " (local only: this file is untracked and git-ignored, but the secret is still in plain text on disk)"
 
 
@@ -82,10 +85,11 @@ def _line_of(text: str, value: str, secret: str) -> int | None:
     return None
 
 
-def scan_json_text(text: str, relpath: str, det: Detector) -> list[Finding]:
+def scan_config_text(text: str, relpath: str, det: Detector) -> list[Finding]:
+    """Scan one agent config file (JSON, or TOML for `.toml` paths)."""
     try:
-        data = json.loads(text)
-    except (json.JSONDecodeError, UnicodeDecodeError):
+        data = tomllib.loads(text) if relpath.endswith(".toml") else json.loads(text)
+    except (json.JSONDecodeError, tomllib.TOMLDecodeError, UnicodeDecodeError):
         return []
 
     findings: list[Finding] = []
@@ -128,7 +132,7 @@ def scan_json_text(text: str, relpath: str, det: Detector) -> list[Finding]:
                         if isinstance(val, str):
                             h = det.env_value(str(name), val, in_command=False)
                             emit(det.scan_text(val) + ([h] if h else []), f"{p}.{name}", f"{name}={val}")
-                elif k == "headers" and isinstance(v, dict):
+                elif k in HEADER_KEYS and isinstance(v, dict):
                     for name, val in v.items():
                         if isinstance(val, str):
                             emit(det.scan_text(f"{name}: {val}"), f"{p}.{name}", f"{name}: {val}")
@@ -143,6 +147,10 @@ def scan_json_text(text: str, relpath: str, det: Detector) -> list[Finding]:
                     emit(det.scan_command(joined), p, joined)
                 elif k == "command" and isinstance(v, str):
                     emit(det.scan_command(v), p, v)
+                elif isinstance(v, str):
+                    # A key named like a secret (`bearer_token = "..."`, `"api_key": "..."`)
+                    h = det.env_value(str(k), v, in_command=False)
+                    emit(det.scan_text(v) + ([h] if h else []), p, v)
                 else:
                     walk(v, p)
 
@@ -178,7 +186,7 @@ def scan_history(repo: Path, det: Detector) -> tuple[list[Finding], dict[str, st
         text = blobs.get(f"{commit}:{path}")
         if text is None:
             continue
-        for f in scan_json_text(text, path, det):
+        for f in scan_config_text(text, path, det):
             f.commit = commit[:12]
             by_key[f.dedupe_key] = f  # newest-first, so the last write is the oldest commit
             seen_in[f.dedupe_key] = seen_in.get(f.dedupe_key, 0) + 1
@@ -276,7 +284,7 @@ def scan(
 
     files, claude_dirs = find_agent_files(root)
     rels = [_rel(f, base) for f in files]
-    findings = [x for f, rel in zip(files, rels) for x in scan_json_text(f.read_text(encoding="utf-8", errors="replace"), rel, det)]
+    findings = [x for f, rel in zip(files, rels) for x in scan_config_text(f.read_text(encoding="utf-8", errors="replace"), rel, det)]
 
     if repo:
         _mark_local_only(repo, findings)
@@ -292,3 +300,6 @@ def scan(
     findings = _apply_ignores([f for f in findings if f.check not in skip], repo or base, notes)
     findings.sort(key=lambda f: (SEVERITY_ORDER.get(f.severity, 9), f.check, f.file, f.line or 0))
     return ScanResult(root=root, repo=repo, files=rels, findings=findings, notes=notes)
+
+
+scan_json_text = scan_config_text  # v0.1 name, kept for compatibility
